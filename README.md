@@ -1,7 +1,7 @@
 # Device tree for Redmi K50 Gaming Edition / POCO F4 GT (codename ingres)
 
 Scaffolded from a sibling sm8450/taro OrangeFox device tree (Xiaomi 12 "cupid") and adapted
-for ingres. This is a from-scratch port: it has NOT been validated against a real device yet.
+for ingres. This is a from-scratch port.
 
 ## Device specifications
 
