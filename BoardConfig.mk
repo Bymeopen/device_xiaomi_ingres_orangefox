@@ -60,10 +60,45 @@ BUILD_BROKEN_USES_BUILD_HOST_EXECUTABLE := true
 BUILD_BROKEN_USES_BUILD_COPY_HEADERS := true
 
 # Crypto
+# On the old fox_12.1 source, TW_INCLUDE_CRYPTO=true crashed (SIGABRT in
+# "Retrieving key from keymaster") because it linked the legacy HIDL Keymaster
+# wrapper, and this device's vendor partition only exposes modern KeyMint AIDL.
+# This fox_14.1 tree's system/vold/Keystore.cpp already talks to
+# android.system.keystore2.IKeystoreService (KeyMint AIDL) instead, and
+# bootable/recovery/Android.mk links libkeymint_support /
+# lib_android_keymaster_keymint_utils when this is true -- so re-enabling it
+# here should let /data actually mount instead of permanently failing with
+# "Unable to mount /data" / "Unable to recreate /data/media folder.".
+# UPDATE: first test hung forever at the OrangeFox splash logo (adb still
+# responsive, so not the old full hang -- just vold blocked). Root cause:
+# device/qcom/twrp-common/crypto/init.recovery.qcom_decrypt.rc (which sets
+# crypto.ready=1 and starts keymint-qti -- required for vold's read_key() to
+# unwrap the hw-wrapped metadata key) was never being packaged into the
+# ramdisk at all, because BOARD_USES_QCOM_FBE_DECRYPTION was never set here.
+# This device is FBE (not FDE), so per device/qcom/twrp-common/README.md:
 TW_INCLUDE_CRYPTO := true
-TW_INCLUDE_CRYPTO_FBE := true
-TW_INCLUDE_FBE_METADATA_DECRYPT := true
 BOARD_USES_QCOM_FBE_DECRYPTION := true
+# UPDATE 2 (historical): both available keymint HAL binaries were broken --
+# our own bundled /system/bin/android.hardware.security.keymint-service-qti
+# failed to link (needs android.hardware.security.keymint-V1-ndk_platform.so,
+# which only exists inside an APEX module recovery never mounts), and the
+# vendor's own referenced /vendor/bin/hw/android.hardware.security.
+# onekeymint-service-qti simply doesn't exist on this vendor image. Real fix:
+# pulled the real, working /vendor/bin/hw/android.hardware.security.
+# keymint-service-qti binary plus its 3 APEX-only .so dependencies
+# (keymint/secureclock/sharedsecret -V1-ndk_platform.so) straight off a
+# normally-booted, rooted HyperOS system, and bundled them into this device
+# tree's recovery ramdisk (recovery/root/vendor/{bin/hw,lib64}/) instead of
+# relying on the AOSP-compiled or vendor-declared-but-missing versions. Also
+# had to delete two STALE prebuilt files that were already sitting in this
+# device tree since the fox_12.1 era (recovery/root/system/bin/android.
+# hardware.security.keymint-service-qti and recovery/root/vendor/etc/init/
+# android.hardware.security.keymint-service-qti.rc) -- they defined a SECOND,
+# conflicting "keymint-qti" service pointing at the broken binary, silently
+# overriding/colliding with twrp-common's correct service definition even
+# after that one was fixed. Confirmed via `ps` that the real binary now
+# starts and stays running (no crash-loop). OF_SKIP_FBE_DECRYPTION is no
+# longer needed -- removed so the real decrypt attempt actually runs.
 BOARD_USES_METADATA_PARTITION := true
 PLATFORM_VERSION := 99.87.36
 PLATFORM_VERSION_LAST_STABLE := $(PLATFORM_VERSION)
@@ -80,8 +115,26 @@ BOARD_BOOT_HEADER_VERSION := 4
 BOARD_MKBOOTIMG_ARGS := --header_version $(BOARD_BOOT_HEADER_VERSION)
 
 TARGET_COMPILE_WITH_MSM_KERNEL := false
-BOARD_EXCLUDE_KERNEL_FROM_RECOVERY_IMAGE := true
 BOARD_KERNEL_IMAGE_NAME := Image
+
+# Neither excluding the kernel (reusing boot_a's) nor embedding the real HyperOS stock
+# kernel fixed the boot failure, and controlled testing proved the bootloader tolerates
+# kernel/DTB mismatches fine (stock HyperOS recovery ramdisk booted to a real UI using
+# PixelOS's own boot_a kernel/vendor_boot/dtbo) -- so the remaining variable is our own
+# ramdisk. When the kernel is excluded, boot_a's own baked-in cmdline is used instead of
+# ours, which meant our console=tty0/earlyprintk=fb debug flags were silently never
+# applied on any prior test. Embedding PixelOS's own kernel Image here (byte-identical to
+# what's already in boot_a) keeps the kernel/DTB pairing that's proven to work AND makes
+# our own BOARD_KERNEL_CMDLINE (with the debug console flags) actually take effect, so we
+# can finally see real crash/panic output if the ramdisk itself is what's failing.
+#
+# Update: embedding a kernel never mattered either way (self-built, stock HyperOS, and
+# PixelOS-matching all hung identically) -- the real bugs turned out to be TW_INCLUDE_CRYPTO
+# (Keymaster HIDL 4.x abort, now disabled above) and modules.load.recovery (now emptied).
+# Re-enabling kernel exclusion so recovery transparently reuses whatever ROM's boot_a
+# kernel is currently flashed (the actual goal: works across every ROM on ingres), now
+# combined with both fixes for the first time.
+BOARD_EXCLUDE_KERNEL_FROM_RECOVERY_IMAGE := true
 TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt/kernel
 
 BOARD_KERNEL_BASE        := 0x00000000
@@ -90,7 +143,8 @@ BOARD_KERNEL_TAGS_OFFSET := 0x01E00000
 BOARD_RAMDISK_OFFSET     := 0x02000000
 
 BOARD_KERNEL_CMDLINE := video=vfb:640x400,bpp=32,memsize=3072000
-BOARD_KERNEL_CMDLINE += console=ttyMSM0,115200n8 earlycon msm_geni_serial.con_enabled=1 androidboot.selinux=permissive
+BOARD_KERNEL_CMDLINE += console=ttyMSM0,115200n8 console=tty0 earlycon msm_geni_serial.con_enabled=1 androidboot.selinux=permissive
+BOARD_KERNEL_CMDLINE += printk.devkmsg=on ignore_loglevel earlyprintk=fb
 BOARD_BOOTCONFIG := androidboot.hardware=qcom androidboot.memcg=1 androidboot.usbcontroller=a600000.dwc3
 BOARD_BOOTCONFIG += androidboot.console=ttyMSM0
 
@@ -152,6 +206,15 @@ TW_BRIGHTNESS_PATH := "/sys/class/backlight/panel0-backlight/brightness"
 TW_MAX_BRIGHTNESS := 2047
 TW_DEFAULT_BRIGHTNESS := 1024
 TW_NO_SCREEN_BLANK := true
+# Tried removing these to fix the "Additions" page bottom-cutoff bug --
+# didn't help, and this is a real deliberate calibration (not obviously
+# wrong), so restored. NOTE: theme's declared design resolution is 1080x1920
+# (bootable/recovery/gui/theme/portrait_hdpi/ui.xml) vs this device's real
+# 1080x2400, so OrangeFox applies a ~1.25x scale-up at runtime -- that part
+# is correct and required (removing it would shrink the whole UI into the
+# top ~80% of the screen, not fix anything). The "Additions" listbox
+# bottom-cutoff bug root cause is still unidentified; needs live visual
+# iteration (screenshots) to debug further, not blind guessing.
 TW_Y_OFFSET := 90
 TW_H_OFFSET := -90
 
@@ -163,13 +226,23 @@ TW_EXCLUDE_TWRPAPP := true
 # TWRP Version
 TW_DEVICE_VERSION := ingres v1
 
-# Load kernel modules for touch & vibrator
+# Load kernel modules for touch & vibrator. Now that the kernel/modules are built from
+# source (matching vermagic guaranteed) instead of borrowed from whatever ROM's "boot"
+# partition is flashed, load the base waipio module set plus the two touch drivers that
+# aren't part of the generic list, straight from the just-built modules, no prebuilt
+# copies / userspace loader workaround needed.
 BOARD_VENDOR_RAMDISK_RECOVERY_KERNEL_MODULES_LOAD := $(strip $(shell cat $(DEVICE_PATH)/modules.load.recovery))
 
 # Real ingres touch panel (fts_touch_spi + its xiaomi_touch dependency) isn't part of the
-# stock vendor_boot module set, so it never auto-loads via first-stage init. This enables
-# OrangeFox's own userspace vendor-module loader (kernel_module_loader.cpp), which picks
-# them up from recovery/root/vendor/lib/modules/1.1/ and sets twrp.modules.loaded=true.
+# stock vendor_boot module set, so it never auto-loads via first-stage init. The .ko files
+# in recovery/root/{,vendor/}lib/modules/ were rebuilt from the same Ingres-Centre kernel
+# source as prebuilt/kernel above, so their vermagic matches. This enables OrangeFox's own
+# userspace vendor-module loader (kernel_module_loader.cpp) to load them.
+# TESTED: removing this flag entirely (theorizing it was stale/harmless dead weight left
+# over from the self-compiled-kernel era) was tried and caused a real regression -- BOTH
+# touch AND battery/health HAL broke on a freshly-reinstalled, clean HyperOS (not just the
+# already-suspected PixelOS case). Root cause of that cascade not fully diagnosed, but the
+# flag is clearly not just inert -- keep it defined.
 TW_LOAD_VENDOR_MODULES := "xiaomi_touch.ko fts_touch_spi.ko"
 
 # The path to a temperature sensor
