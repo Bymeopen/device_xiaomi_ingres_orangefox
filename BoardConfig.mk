@@ -218,6 +218,19 @@ TW_NO_SCREEN_BLANK := true
 TW_Y_OFFSET := 90
 TW_H_OFFSET := -90
 
+# OF_STATUS_H: height (in the theme's virtual 1080x1920 coordinate space, which gets
+# scaled ~1.25x to the real 1080x2400 panel) of the status bar / notch-safe area.
+# Was never set here, silently defaulting to OrangeFox's generic fallback of "72"
+# (bootable/recovery/orangefox.mk) -- and since the theme computes
+# cutout_w = status_h - 72 (vars.xml) to derive how far to push everything else down
+# to clear the actual punch-hole camera, an unset/default OF_STATUS_H made
+# cutout_w resolve to exactly 0, i.e. no notch compensation was happening at all.
+# status_info_y (the clock/battery text's actual Y placement) is derived from this
+# in data.cpp as (OF_STATUS_H/2)-28 -- so a *larger* OF_STATUS_H pushes the status
+# text further down, not up. 96 put the clock noticeably below the punch-hole
+# instead of level with it. Lowering to bring status_info_y close to 0.
+OF_STATUS_H := 56
+
 # TWRP Haptics
 TW_SUPPORT_INPUT_AIDL_HAPTICS := true
 TW_SUPPORT_INPUT_AIDL_HAPTICS_FQNAME := "IVibrator/vibratorfeature"
