@@ -33,7 +33,7 @@ jobs:
           sudo apt-get install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev \
             libc6-dev-i386 libncurses5 libncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev \
             libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3 python-is-python3 \
-            rsync bc libssl-dev openjdk-11-jdk
+            rsync bc libssl-dev openjdk-11-jdk patch schedtool
           
           # Install repo tool
           sudo curl -o /usr/local/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
@@ -45,10 +45,9 @@ jobs:
 
       - name: Sync OrangeFox Source (fox_14.1)
         run: |
-          mkdir -p $HOME/fox_14.1
-          cd $HOME/fox_14.1
-          repo init -u https://gitlab.com/OrangeFox/manifest.git -b fox_14.1 --depth=1
-          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+          git clone https://github.com/Just-TWRP/OrangeFox_sync.git $HOME/OrangeFox_sync
+          cd $HOME/OrangeFox_sync
+          ./orangefox_sync.sh --branch 14.1 --path $HOME/fox_14.1
 
       - name: Place Device Tree
         run: |
@@ -75,35 +74,17 @@ jobs:
             cp -v "$OUT_DIR/recovery.img" artifacts/recovery-ingres.img
           fi
           
-          # Find any OrangeFox zip packages
-          find "$OUT_DIR" -name "OrangeFox*.zip" -exec cp -v {} artifacts/ \; || true
-          find "$OUT_DIR" -name "*.img" -exec cp -v {} artifacts/ \; || true
+          find "$OUT_DIR" -maxdepth 2 -name "OrangeFox*.zip" -exec cp -v {} artifacts/ \; || true
+          find "$OUT_DIR" -maxdepth 2 -name "*.img" -exec cp -v {} artifacts/ \; || true
           
-          ls -la artifacts/
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt || true
+          ls -la
 
-      - name: Upload Recovery Artifacts
+      - name: Upload Recovery Artifacts (Non-Release)
         uses: actions/upload-artifact@v4
         with:
-          name: OrangeFox-Recovery-ingres
+          name: OrangeFox-Recovery-ingres-non-release
           path: artifacts/*
           if-no-files-found: warn
-
-      - name: Create GitHub Release
-        if: success()
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          name: OrangeFox Recovery for POCO F4 GT (ingres) - Build #${{ github.run_number }}
-          body: |
-            ## OrangeFox Recovery for POCO F4 GT / Redmi K50 Gaming (ingres)
-            
-            ### Included Fixes & Optimizations:
-            - **No Severe Lag:** Fixed kernel cmdline, enabled CPU performance governor, and set frequency floors to eliminate 300MHz UI lag.
-            - **Haptics Disabled:** `TW_NO_HAPTICS := true` and disabled vibratorfeature service to prevent crash-loops.
-            - **35% Brightness:** Default screen brightness calibrated to 35% (`716/2047`).
-            - **Display Hardware:** Fixed syntax error in `ueventd.rc` restoring MDSS/MDP hardware permissions.
-            - **No Sleep on Charger:** Disabled charger suspend (`ro.charger.enable_suspend=0`).
-            - **Storage Cleanup:** Removed phantom MicroSD entry from `recovery.fstab`.
-          files: artifacts/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          retention-days: 7
