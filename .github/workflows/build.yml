@@ -20,12 +20,32 @@ jobs:
         with:
           path: device_tree
 
-      - name: Free Disk Space
+      - name: Maximize Free Disk Space
         run: |
-          echo "Freeing disk space..."
-          sudo rm -rf /usr/share/dotnet /etc/mysql /var/lib/mysql /usr/local/lib/android /opt/ghc /usr/share/swift
-          sudo docker image prune -a -f || true
-          df -h
+          echo "=== Disk Space Before Cleanup ==="
+          df -h /
+          
+          echo "Stopping unnecessary services..."
+          sudo systemctl stop docker || true
+          
+          echo "Removing unneeded toolchains, runtimes, and caches..."
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/local/share/chromium
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /etc/mysql /var/lib/mysql
+          sudo rm -rf /var/lib/docker
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo apt-get clean
+          sudo journalctl --vacuum-time=1s || true
+          
+          echo "=== Disk Space After Cleanup ==="
+          df -h /
 
       - name: Setup Build Environment & Dependencies
         run: |
@@ -47,7 +67,29 @@ jobs:
         run: |
           git clone https://github.com/Just-TWRP/OrangeFox_sync.git $HOME/OrangeFox_sync
           cd $HOME/OrangeFox_sync
+          
+          # 1. Fix DEVICE_BRANCH to android-14.1 for qcom common repo
+          sed -i 's/DEVICE_BRANCH="android-14"/DEVICE_BRANCH="android-14.1"/g' orangefox_sync.sh
+          
+          # 2. Optimize repo init with shallow clone and omit darwin/macOS toolchains
+          sed -i 's/repo init --depth=1 -u $MIN_MANIFEST -b $TWRP_BRANCH/repo init --depth=1 -u $MIN_MANIFEST -b $TWRP_BRANCH -g default,-darwin,-notdefault/g' orangefox_sync.sh
+          
+          # 3. Optimize repo sync with branch filter, no clone bundles, and no tags
+          sed -i 's/repo sync -j25/repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --prune/g' orangefox_sync.sh
+          
+          # 4. Use shallow clone (--depth=1) for recovery and vendor repos
+          sed -i 's/git clone $URL -b $BRANCH recovery/git clone --depth=1 $URL -b $BRANCH recovery/g' orangefox_sync.sh
+          sed -i 's/git clone https:\/\/github.com\/TeamWin\/android_device_qcom_common -b $DEVICE_BRANCH device\/qcom\/common/git clone --depth=1 https:\/\/github.com\/TeamWin\/android_device_qcom_common -b $DEVICE_BRANCH device\/qcom\/common/g' orangefox_sync.sh
+          sed -i 's/git clone https:\/\/github.com\/TeamWin\/android_device_qcom_twrp-common -b $DEVICE_BRANCH device\/qcom\/twrp-common/git clone --depth=1 https:\/\/github.com\/TeamWin\/android_device_qcom_twrp-common -b $DEVICE_BRANCH device\/qcom\/twrp-common/g' orangefox_sync.sh
+          
+          echo "Running optimized OrangeFox sync script..."
           ./orangefox_sync.sh --branch 14.1 --path $HOME/fox_14.1
+          
+          echo "Reclaiming disk space by removing .repo metadata directory..."
+          rm -rf $HOME/fox_14.1/.repo
+          
+          echo "=== Disk Space After Sync & .repo Cleanup ==="
+          df -h /
 
       - name: Place Device Tree
         run: |
@@ -59,30 +101,33 @@ jobs:
         run: |
           cd $HOME/fox_14.1
           source build/envsetup.sh
+          source device/xiaomi/ingres/vendorsetup.sh || true
           export ALLOW_MISSING_DEPENDENCIES=true
           export LC_ALL="C"
           lunch twrp_ingres-ap2a-eng
           mka adbd recoveryimage -j$(nproc --all)
 
       - name: Collect Recovery Artifacts
-        id: collect
+        if: always()
         run: |
           mkdir -p artifacts
           OUT_DIR="$HOME/fox_14.1/out/target/product/ingres"
-          
-          if [ -f "$OUT_DIR/recovery.img" ]; then
-            cp -v "$OUT_DIR/recovery.img" artifacts/recovery-ingres.img
+          if [ -d "$OUT_DIR" ]; then
+            find "$OUT_DIR" -maxdepth 2 -name "*.img" -exec cp -v {} artifacts/ \; || true
+            find "$OUT_DIR" -maxdepth 2 -name "OrangeFox*.zip" -exec cp -v {} artifacts/ \; || true
+            find "$OUT_DIR" -maxdepth 2 -name "OrangeFox*.zip.md5" -exec cp -v {} artifacts/ \; || true
           fi
-          
-          find "$OUT_DIR" -maxdepth 2 -name "OrangeFox*.zip" -exec cp -v {} artifacts/ \; || true
-          find "$OUT_DIR" -maxdepth 2 -name "*.img" -exec cp -v {} artifacts/ \; || true
-          
           cd artifacts
-          sha256sum * > SHA256SUMS.txt || true
-          ls -la
+          if [ -n "$(ls -A . 2>/dev/null)" ]; then
+            sha256sum * > SHA256SUMS.txt || true
+            ls -la
+          else
+            echo "No artifacts generated."
+          fi
 
       - name: Upload Recovery Artifacts (Non-Release)
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: OrangeFox-Recovery-ingres-non-release
           path: artifacts/*
