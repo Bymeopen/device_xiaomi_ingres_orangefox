@@ -5,8 +5,9 @@
 # ==============================================================================
 set -euo pipefail
 
-TARGET_DIR="${1:-$HOME/fox_14.1}"
-SYNC_DIR="$HOME/OrangeFox_sync"
+WORKSPACE="${GITHUB_WORKSPACE:-$HOME}"
+TARGET_DIR="${1:-$WORKSPACE/fox_14.1}"
+SYNC_DIR="$WORKSPACE/OrangeFox_sync"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export EXCLUDE_PY="$SCRIPT_DIR/exclude_bloat.py"
 
@@ -61,4 +62,4 @@ echo "Reclaiming disk space by removing .repo metadata directory..."
 rm -rf "$TARGET_DIR/.repo"
 
 echo "=== Disk Space After Sync & Cleanup ==="
-df -h /
+df -h

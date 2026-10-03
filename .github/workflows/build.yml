@@ -15,37 +15,22 @@ jobs:
     name: Build OrangeFox fox_14.1 for POCO F4 GT (ingres)
     runs-on: ubuntu-22.04
     steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 4096
+          temp-reserve-mb: 2048
+          swap-size-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
       - name: Checkout Device Tree
         uses: actions/checkout@v4
         with:
           path: device_tree
-
-      - name: Maximize Free Disk Space
-        run: |
-          echo "=== Disk Space Before Cleanup ==="
-          df -h /
-          
-          echo "Stopping unnecessary services..."
-          sudo systemctl stop docker || true
-          
-          echo "Removing unneeded toolchains, runtimes, and caches..."
-          sudo rm -rf /opt/hostedtoolcache
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/share/swift
-          sudo rm -rf /usr/local/share/boost
-          sudo rm -rf /usr/local/share/chromium
-          sudo rm -rf /usr/local/share/powershell
-          sudo rm -rf /etc/mysql /var/lib/mysql
-          sudo rm -rf /var/lib/docker
-          sudo swapoff -a || true
-          sudo rm -f /swapfile
-          sudo apt-get clean
-          sudo journalctl --vacuum-time=1s || true
-          
-          echo "=== Disk Space After Cleanup ==="
-          df -h /
 
       - name: Setup Build Environment & Dependencies
         run: |
@@ -65,17 +50,17 @@ jobs:
 
       - name: Sync OrangeFox Source (fox_14.1)
         run: |
-          bash device_tree/scripts/sync_orangefox.sh "$HOME/fox_14.1"
+          bash device_tree/scripts/sync_orangefox.sh "$GITHUB_WORKSPACE/fox_14.1"
 
       - name: Place Device Tree
         run: |
-          mkdir -p $HOME/fox_14.1/device/xiaomi/ingres
-          cp -rf device_tree/* $HOME/fox_14.1/device/xiaomi/ingres/
-          rm -rf $HOME/fox_14.1/device/xiaomi/ingres/.git
+          mkdir -p $GITHUB_WORKSPACE/fox_14.1/device/xiaomi/ingres
+          cp -rf device_tree/* $GITHUB_WORKSPACE/fox_14.1/device/xiaomi/ingres/
+          rm -rf $GITHUB_WORKSPACE/fox_14.1/device/xiaomi/ingres/.git
 
       - name: Compile OrangeFox Recovery
         run: |
-          cd $HOME/fox_14.1
+          cd $GITHUB_WORKSPACE/fox_14.1
           source build/envsetup.sh
           source device/xiaomi/ingres/vendorsetup.sh || true
           export ALLOW_MISSING_DEPENDENCIES=true
@@ -87,7 +72,7 @@ jobs:
         if: always()
         run: |
           mkdir -p artifacts
-          OUT_DIR="$HOME/fox_14.1/out/target/product/ingres"
+          OUT_DIR="$GITHUB_WORKSPACE/fox_14.1/out/target/product/ingres"
           if [ -d "$OUT_DIR" ]; then
             find "$OUT_DIR" -maxdepth 2 -name "*.img" -exec cp -v {} artifacts/ \; || true
             find "$OUT_DIR" -maxdepth 2 -name "OrangeFox*.zip" -exec cp -v {} artifacts/ \; || true
