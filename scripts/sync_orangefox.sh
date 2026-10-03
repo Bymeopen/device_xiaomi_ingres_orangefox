@@ -7,8 +7,11 @@ set -euo pipefail
 
 TARGET_DIR="${1:-$HOME/fox_14.1}"
 SYNC_DIR="$HOME/OrangeFox_sync"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export EXCLUDE_PY="$SCRIPT_DIR/exclude_bloat.py"
 
 echo "=== Syncing OrangeFox 14.1 to: $TARGET_DIR ==="
+echo "Using bloat exclusion script: $EXCLUDE_PY"
 
 mkdir -p "$SYNC_DIR"
 if [ ! -d "$SYNC_DIR/.git" ]; then
@@ -17,7 +20,7 @@ fi
 
 cd "$SYNC_DIR"
 
-# 1. Patch DEVICE_BRANCH to android-14.1
+# 1. Patch DEVICE_BRANCH to android-14.1 for qcom common repo
 sed -i 's/DEVICE_BRANCH="android-14"/DEVICE_BRANCH="android-14.1"/g' orangefox_sync.sh
 
 # 2. Add Darwin/macOS omission to repo init
@@ -31,37 +34,22 @@ sed -i 's/git clone $URL -b $BRANCH recovery/git clone --depth=1 $URL -b $BRANCH
 sed -i 's/git clone https:\/\/github.com\/TeamWin\/android_device_qcom_common -b $DEVICE_BRANCH device\/qcom\/common/git clone --depth=1 https:\/\/github.com\/TeamWin\/android_device_qcom_common -b $DEVICE_BRANCH device\/qcom\/common/g' orangefox_sync.sh
 sed -i 's/git clone https:\/\/github.com\/TeamWin\/android_device_qcom_twrp-common -b $DEVICE_BRANCH device\/qcom\/twrp-common/git clone --depth=1 https:\/\/github.com\/TeamWin\/android_device_qcom_twrp-common -b $DEVICE_BRANCH device\/qcom\/twrp-common/g' orangefox_sync.sh
 
-# 5. Inject local_manifests to exclude 75+ heavy unused projects (kernel prebuilts, old JDKs, VNDKs, CTS)
+# 5. Inject exclude_bloat.py call right before repo sync
 python3 - << 'PYEOF'
+import os
+exclude_py = os.environ.get('EXCLUDE_PY', '')
+
 with open('orangefox_sync.sh', 'r') as f:
     code = f.read()
 
 target = 'echo "-- Syncing the $TWRP_BRANCH minimal manifest repo ...";'
-injection = r'''  mkdir -p "$MANIFEST_DIR/.repo/local_manifests"
-  python3 -c "
-import xml.etree.ElementTree as ET
-try:
-    tree = ET.parse('$MANIFEST_DIR/.repo/manifests/default.xml')
-    removals = []
-    patterns = ['cts', 'kernel/prebuilts', 'jdk8', 'jdk9', 'jdk11', 'jdk21', 'darwin', 'emulator', 'qemu', 'vndk/v2', 'vndk/v30', 'vndk/v31', 'vndk/v32', 'vndk/v33', 'tradefederation', 'module_sdk']
-    for p in tree.getroot().findall('project'):
-        name = p.get('name', '')
-        path = p.get('path', '')
-        if any(pat in path for pat in patterns):
-            removals.append(f'  <remove-project name=\"{name}\" />')
-    with open('$MANIFEST_DIR/.repo/local_manifests/remove_bloat.xml', 'w') as f:
-        f.write('<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<manifest>\n' + '\n'.join(removals) + '\n</manifest>\n')
-    print(f'-- Excluded {len(removals)} unneeded heavy projects from sync.')
-except Exception as e:
-    print('Warning during bloat exclusion:', e)
-"
-  ''' + target
+injection = f'  python3 "{exclude_py}" "$MANIFEST_DIR/.repo/manifests/remove-minimal.xml"\n  ' + target
 
-if target in code and 'remove_bloat.xml' not in code:
+if target in code and 'exclude_bloat.py' not in code:
     code = code.replace(target, injection, 1)
     with open('orangefox_sync.sh', 'w') as f:
         f.write(code)
-    print("Injected bloat exclusion logic into orangefox_sync.sh")
+    print("Injected exclude_bloat call into orangefox_sync.sh successfully.")
 PYEOF
 
 bash -n orangefox_sync.sh
