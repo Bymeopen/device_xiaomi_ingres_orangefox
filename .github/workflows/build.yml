@@ -65,31 +65,7 @@ jobs:
 
       - name: Sync OrangeFox Source (fox_14.1)
         run: |
-          git clone https://github.com/Just-TWRP/OrangeFox_sync.git $HOME/OrangeFox_sync
-          cd $HOME/OrangeFox_sync
-          
-          # 1. Fix DEVICE_BRANCH to android-14.1 for qcom common repo
-          sed -i 's/DEVICE_BRANCH="android-14"/DEVICE_BRANCH="android-14.1"/g' orangefox_sync.sh
-          
-          # 2. Optimize repo init with shallow clone and omit darwin/macOS toolchains
-          sed -i 's/repo init --depth=1 -u $MIN_MANIFEST -b $TWRP_BRANCH/repo init --depth=1 -u $MIN_MANIFEST -b $TWRP_BRANCH -g default,-darwin,-notdefault/g' orangefox_sync.sh
-          
-          # 3. Optimize repo sync with branch filter, no clone bundles, and no tags
-          sed -i 's/repo sync -j25/repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --prune/g' orangefox_sync.sh
-          
-          # 4. Use shallow clone (--depth=1) for recovery and vendor repos
-          sed -i 's/git clone $URL -b $BRANCH recovery/git clone --depth=1 $URL -b $BRANCH recovery/g' orangefox_sync.sh
-          sed -i 's/git clone https:\/\/github.com\/TeamWin\/android_device_qcom_common -b $DEVICE_BRANCH device\/qcom\/common/git clone --depth=1 https:\/\/github.com\/TeamWin\/android_device_qcom_common -b $DEVICE_BRANCH device\/qcom\/common/g' orangefox_sync.sh
-          sed -i 's/git clone https:\/\/github.com\/TeamWin\/android_device_qcom_twrp-common -b $DEVICE_BRANCH device\/qcom\/twrp-common/git clone --depth=1 https:\/\/github.com\/TeamWin\/android_device_qcom_twrp-common -b $DEVICE_BRANCH device\/qcom\/twrp-common/g' orangefox_sync.sh
-          
-          echo "Running optimized OrangeFox sync script..."
-          ./orangefox_sync.sh --branch 14.1 --path $HOME/fox_14.1
-          
-          echo "Reclaiming disk space by removing .repo metadata directory..."
-          rm -rf $HOME/fox_14.1/.repo
-          
-          echo "=== Disk Space After Sync & .repo Cleanup ==="
-          df -h /
+          bash device_tree/scripts/sync_orangefox.sh "$HOME/fox_14.1"
 
       - name: Place Device Tree
         run: |
