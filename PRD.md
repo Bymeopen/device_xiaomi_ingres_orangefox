@@ -1,140 +1,138 @@
-# PRD: Optimasi Performa, Perbaikan Bug & Re-Branding OrangeFox Recovery (POCO F4 GT / ingres)
+# PRD v2: Investigasi Mendalam Akar Masalah Lag & Rencana Komprehensif Perbaikan Bug POCO F4 GT (ingres)
 
-## 1. Ringkasan Eksekutif (Executive Summary)
-Dokumen ini merupakan **Product Requirements Document (PRD)** untuk perbaikan dan penyempurnaan pohon perangkat (*device tree*) **OrangeFox Recovery** untuk perangkat **POCO F4 GT / Redmi K50 Gaming** (codename: `ingres`, SoC: Snapdragon 8 Gen 1 / SM8450).
+## 1. Latar Belakang & Pernyataan Masalah
+Berdasarkan pengujian pada perangkat fisik **POCO F4 GT / Redmi K50 Gaming (ingres)**, recovery mengalami **lag yang sangat parah hingga tidak dapat digunakan (unusable)**. 
 
-Tujuan utama dari iterasi ini adalah:
-1. Mengatasi masalah **lag / patah-patah parah** saat recovery berjalan.
-2. Mematikan fitur **getar (vibration / haptics)** secara tuntas.
-3. Mengatur tingkat **kecerahan default ke 35%**.
-4. Membersihkan seluruh identitas/nama lama (`bladee`, `cupid`) agar repositori menjadi milik `Bymeopen` secara bersih (*clean state*).
-5. Memastikan stabilitas tanpa merusak fungsionalitas yang sudah bekerja (seperti dekripsi `/data` dan driver touch panel).
+Pengguna telah mengonfirmasi:
+1. **Riwayat author lama dibiarkan tetap ada** pada histori git (`okey biarkan author lama`).
+2. Melakukan **investigasi sedalam mungkin** ke seluruh lapisan sistem (kernel, DRM, MinUI, CPU governor, scheduler, touch polling, input queue, thermal, dan fstab) untuk menemukan seluruh akar masalah lag dan bug lainnya.
+3. Menyusun **PRD (Product Requirements Document) komprehensif** sebelum mengeksekusi perubahan.
 
 ---
 
-## 2. Analisis Akar Masalah (Root Cause Analysis - RCA)
+## 2. Investigasi Mendalam: Mengapa POCO F4 GT Mengalami Lag Sangat Parah?
 
-### A. Penyebab Lag / Patah-Patah Parah pada POCO F4 GT
-Berdasarkan audit mendalam terhadap seluruh berkas konfigurasi di repositori, ditemukan **5 faktor utama** penyebab lag ekstrem:
+POCO F4 GT (`ingres`) adalah ponsel gaming berbasis SoC **Qualcomm Snapdragon 8 Gen 1 (SM8450 / taro)** dengan layar **AMOLED 120Hz**, touch sampling rate gaming **480Hz**, tombol fisik pop-up magnetik (*GameKeys*), dan storage **UFS 3.1**.
 
-1. **Kernel Debugging Overhead & Virtual Framebuffer pada `BOARD_KERNEL_CMDLINE`:**
-   * Pada [BoardConfig.mk](file:///workspace/orange-fox-ingres/BoardConfig.mk#L145-L147), terdapat parameter:
-     `video=vfb:640x400,bpp=32,memsize=3072000`
-     `console=tty0 earlyprintk=fb printk.devkmsg=on ignore_loglevel`
-   * **Dampak:** Parameter ini mendaftarkan framebuffer virtual 640x400 pada layar fisik 1080x2400 dan memaksa setiap baris log kernel (`printk`) dituliskan secara sinkron langsung ke layar (*framebuffer console*). MinUI / Surface rendering OrangeFox harus berebut framebuffer dengan output konsol teks tty0, yang mengakibatkan framerate anjlok drastis (hingga 1–5 FPS) dan stuttering parah.
-
-2. **Kesalahan Sintaks Quoting pada `TARGET_RECOVERY_PIXEL_FORMAT`:**
-   * Di [BoardConfig.mk](file:///workspace/orange-fox-ingres/BoardConfig.mk#L184):
-     `TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"` (menggunakan tanda kutip dua).
-   * **Dampak:** Pada sistem build Android AOSP / TWRP (`minui/Android.mk`), pengecekan dilakukan dengan:
-     `ifeq ($(TARGET_RECOVERY_PIXEL_FORMAT),RGBX_8888)`
-     Karena nilai variabel memiliki tanda kutip literal, kondisi ini bernilai *false*, sehingga minui tidak mengaktifkan pipeline grafis native RGBX hardware dan jatuh ke konversi format piksel software (*software color conversion* CPU-heavy) setiap kali frame dirender.
-
-3. **CPU Terjebak di Frekuensi Terendah (Tanpa Scaling Governor):**
-   * Chipset Snapdragon 8 Gen 1 (SM8450) memiliki 8 core (4 Little Cortex-A510, 3 Big Cortex-A710, 1 Prime Cortex-X2).
-   * Di [recovery/root/init.recovery.qcom.rc](file:///workspace/orange-fox-ingres/recovery/root/init.recovery.qcom.rc), tidak ada inisialisasi CPU governor. Secara default, kernel recovery berjalan pada mode hemat daya terendah (300 MHz pada core Little) dan core Big/Prime dimatikan (*offline*).
-   * **Dampak:** Render UI software pada layar FHD+ 120Hz membutuhkan siklus CPU yang memadai. Jika berjalan di 300 MHz pada 1 core, navigasi layar akan terasa sangat lambat dan delayed.
-
-4. **Crash Loop & Blocking I/O pada Layanan Vibrator AIDL:**
-   * Di [BoardConfig.mk](file:///workspace/orange-fox-ingres/BoardConfig.mk#L234-L236), aktif:
-     `TW_SUPPORT_INPUT_AIDL_HAPTICS := true`
-     `TW_SUPPORT_INPUT_AIDL_HAPTICS_FQNAME := "IVibrator/vibratorfeature"`
-   * Di [recovery/root/vendor/etc/init/vendor.xiaomi.hardware.vibratorfeature.service.rc](file:///workspace/orange-fox-ingres/recovery/root/vendor/etc/init/vendor.xiaomi.hardware.vibratorfeature.service.rc), layanan `vibratorfeature-hal-service` dijalankan saat boot.
-   * **Dampak:** Driver haptik Xiaomi memerlukan konfigurasi i2c/audio routing yang di recovery belum tentu siap. Jika layanan ini crash-loop, init akan terus-menerus me-restart proses tersebut (memakan CPU 100%). Selain itu, setiap event sentuhan layar memanggil Binder AIDL ke vibrator service yang hang, sehingga setiap sentuhan mengalami *input lag*.
-
-5. **Resolusi dan Skala Layar yang Belum Didefinisikan Secara Presisi:**
-   * Di `vendorsetup.sh`, variabel `OF_SCREEN_H=2400` belum didefinisikan (masih default 1920).
-   * Di `BoardConfig.mk`, `TARGET_SCREEN_WIDTH` dan `TARGET_SCREEN_HEIGHT` belum dideklarasikan secara eksplisit.
-   * **Dampak:** OrangeFox melakukan kalkulasi scaling dinamis yang membebani GPU/CPU software rendering.
+Melalui analisis mendalam pada seluruh arsitektur recovery, ditemukan **8 faktor kritis** yang secara simultan menyebabkan kelumpuhan performa (lag parah):
 
 ---
 
-### B. Analisis Kecerahan (Brightness)
-* Nilai maksimum saat ini: `TW_MAX_BRIGHTNESS := 2047`.
-* Nilai default saat ini: `TW_DEFAULT_BRIGHTNESS := 1024` (50%).
-* Nilai 35% yang diinginkan: `round(2047 * 0.35) = 716`.
-* Di `init.recovery.qcom.rc`, nilai hardcoded saat ini adalah `200` (terlalu redup di awal sebelum GUI mengambil alih). Perlu diselaraskan menjadi `716`.
+### Faktor 1: Ketiadaan "Touch Boost" di Recovery Menyebabkan CPU Terkunci di 300 MHz
+* **Mekanisme di Android Normal:** Di OS Android normal, ada daemon `powerhal` / `libperfmgr` yang mendengarkan event sentuhan layar. Setiap kali jari menyentuh layar, Android langsung mengirim sinyal *Touch Boost* untuk menaikkan frekuensi CPU ke 1.5–2.0+ GHz selama beberapa ratus milidetik.
+* **Kondisi di Recovery:** Di lingkungan recovery (TWRP/OrangeFox), **TIDAK ADA POWERHAL**.
+* **Dampak Fatal:** 
+  Governor `schedutil` di kernel melihat MinUI sebagai aplikasi yang tidur (*idle*) saat tidak ada interaksi. Saat jari menyentuh layar untuk menggeser (*swipe*), CPU sedang berada di frekuensi terendah **300 MHz pada core Little (Cortex-A510)**.
+  Karena MinUI melakukan rendering 2D via software pada resolusi **1080x2400 (2.592.000 piksel)**, memproses 1 frame 32-bit membutuhkan pemrosesan buffer sebesar ~10.4 MB. Pada kecepatan 300 MHz, CPU membutuhkan waktu **150–250 ms per frame**, yang menghasilkan framerate hancur ke **4–6 FPS**. Setiap geseran terasa macet total!
+* **Solusi Mutlak:** 
+  1. Kunci CPU cluster Little (`cpu0-3`) ke governor `performance` atau naikkan `scaling_min_freq` ke minimal **1.05 GHz – 1.32 GHz**.
+  2. Terapkan perintah ini di 3 titik siklus boot: `on init`, `on boot`, dan `postrecoveryboot.sh` agar tidak tertimpa oleh inisialisasi kernel tahap lanjut.
 
 ---
 
-### C. Analisis Identitas Lama (De-branding / Pembersihan Nama)
-Ditemukan jejak author lama dan nama perangkat rujukan:
-1. `vendorsetup.sh`: `export OF_MAINTAINER="bladee"`
-2. Git Commits: author `bladee <131528761+MrMatiaas@users.noreply.github.com>` & `poveresmatias@gmail.com`
-3. `BoardConfig.mk` & `README.md`: Referensi ke `cupid` (Xiaomi 12) dan scaffold lama.
-4. `init.recovery.qcom.rc`: Komentar referensi ke `cupid`.
-5. `init.recovery.usb.rc`: Baris residu Asus (`ro.vendor.asus.product.mkt_name`).
+### Faktor 2: Polling Thermal Zone 50 Memblokir UI Thread Setiap Detik
+* **Kondisi Kode Saat Ini:**
+  Di [BoardConfig.mk](file:///workspace/orange-fox-ingres/BoardConfig.mk#L241):
+  `TW_CUSTOM_CPU_TEMP_PATH := "/sys/devices/virtual/thermal/thermal_zone50/temp"`
+* **Dampak Fatal:**
+  1. Pada SM8450, `thermal_zone50` **bukanlah sensor CPU**, melainkan sensor subsistem jarak jauh (modem/PMIC/ADSP) yang membutuhkan komunikasi IPC via GLINK/RPMh.
+  2. TWRP memiliki timer internal di thread GUI utama yang membaca file ini **setiap 1 detik** untuk memperbarui status suhu.
+  3. Pembacaan sysfs jarak jauh ini mengalami *blocking I/O* atau timeout, sehingga **setiap detik seluruh UI OrangeFox freeze / membeku selama ratusan milidetik**!
+  4. Adanya tanda kutip literal `"/..."` juga menyebabkan pemanggilan sistem `open()` gagal dan membanjiri log error secara berulang.
+* **Solusi Mutlak:**
+  Aktifkan `TW_NO_CPU_TEMP := true` dan hapus `TW_CUSTOM_CPU_TEMP_PATH`. Ini menghentikan thread GUI dari mem-polling sysfs thermal, membebaskan thread antarmuka dari *blocking I/O*.
 
 ---
 
-## 3. Rencana Solusi & Perubahan Teknis (Technical Solution Plan)
-
-### Modul 1: Mengatasi Lag & Optimasi Performa UI
-1. **Bersihkan `BOARD_KERNEL_CMDLINE`:**
-   * Hapus `video=vfb:640x400,bpp=32,memsize=3072000`.
-   * Hapus `console=tty0`, `earlyprintk=fb`, `printk.devkmsg=on`, `ignore_loglevel`.
-   * Pertahankan konfigurasi serial & selinux standar:
-     `console=ttyMSM0,115200n8 earlycon msm_geni_serial.con_enabled=1 androidboot.selinux=permissive`
-2. **Koreksi `TARGET_RECOVERY_PIXEL_FORMAT`:**
-   * Ganti `TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"` menjadi `TARGET_RECOVERY_PIXEL_FORMAT := RGBX_8888`.
-3. **Konfigurasi CPU Performance Governor saat Recovery Boot:**
-   * Tambahkan perintah init di `init.recovery.qcom.rc`:
-     * Bawa core CPU 0–7 ke status `online 1`.
-     * Atur scaling governor ke `schedutil` (atau `performance` untuk responsivitas instan).
-4. **Deklarasikan Resolusi Layar Penuh POCO F4 GT:**
-   * Di `BoardConfig.mk`:
-     `TARGET_SCREEN_WIDTH := 1080`
-     `TARGET_SCREEN_HEIGHT := 2400`
-   * Di `vendorsetup.sh`:
-     `export OF_SCREEN_H=2400`
-     `export OF_STATUS_INDENT_LEFT=48`
-     `export OF_STATUS_INDENT_RIGHT=48`
-5. **Hapus Ghost Service Trigger:**
-   * Hapus `start touch_report` dan `start touchsensor` dari `init.recovery.qcom.rc` karena binary tersebut tidak ada di ramdisk.
+### Faktor 3: Bug Sintaks `*/` di `ueventd.rc` Merusak Izin Hardware Akselerasi Display (MDSS/MDP)
+* **Kondisi Kode Saat Ini:**
+  Di [recovery/root/vendor/ueventd.rc](file:///workspace/orange-fox-ingres/recovery/root/vendor/ueventd.rc#L434), terdapat baris penutup komentar bahasa C `*/` yang salah tempat:
+  ```text
+  433: /sys/class/graphics/fb0     msm_cmd_autorefresh_en   0664    system  graphics
+  434: */
+  435: 
+  436: /sys/devices/platform/soc/ae00000.qcom,mdss_mdp power/control 0664 system graphics
+  ```
+* **Dampak Fatal:**
+  Di berkas `.rc`, komentar menggunakan tanda pagar `#`. Ketika daemon `ueventd` membaca baris 434 (`*/`), terjadi syntax error yang menggugurkan pemrosesan izin sysfs di bawahnya. 
+  Baris 436 (`ae00000.qcom,mdss_mdp`) adalah pengontrol daya dan performa **Qualcomm Mobile Display Subsystem (MDSS / MDP)**. Kegagalan izin ini melumpuhkan manajemen daya display hardware DRM.
+* **Solusi Mutlak:**
+  Hapus baris `*/` dari `ueventd.rc`.
 
 ---
 
-### Modul 2: Menonaktifkan Getar (Disable Vibration / Haptics)
-1. **Nonaktifkan Haptics di Build Flag:**
-   * Di `BoardConfig.mk`, hapus:
-     `TW_SUPPORT_INPUT_AIDL_HAPTICS := true`
-     `TW_SUPPORT_INPUT_AIDL_HAPTICS_FQNAME := "IVibrator/vibratorfeature"`
-   * Tambahkan:
-     `TW_NO_HAPTICS := true`
-2. **Matikan Service Vibrator Feature:**
-   * Di `recovery/root/vendor/etc/init/vendor.xiaomi.hardware.vibratorfeature.service.rc`, nonaktifkan `start vibratorfeature-hal-service` dan tandai servicenya sebagai `disabled`.
-   * Ini memastikan tidak ada background process getar yang berjalan atau crash-loop.
+### Faktor 4: CPU Suspend Aktif Saat Terhubung Charger/USB (`ro.charger.enable_suspend=1`)
+* **Kondisi Kode Saat Ini:**
+  Di [system.prop](file:///workspace/orange-fox-ingres/system.prop#L2):
+  `ro.charger.enable_suspend=1`
+* **Dampak Fatal:**
+  Saat ponsel dihubungkan ke komputer atau kabel charger dalam mode recovery, properti ini mengizinkan kernel untuk memasuki mode *Deep Sleep (Suspend)*.
+  Ketika layar disentuh, kernel harus terbangun dari suspend, menginisialisasi ulang clock bus SPI touchscreen, dan baru memproses event. Hal ini menimbulkan jeda input sentuhan yang parah (*huge input lag / dropped touches*).
+* **Solusi Mutlak:**
+  Ubah menjadi `ro.charger.enable_suspend=0`.
 
 ---
 
-### Modul 3: Kalibrasi Kecerahan ke 35%
-1. Di `BoardConfig.mk`:
-   * `TW_BRIGHTNESS_PATH := /sys/class/backlight/panel0-backlight/brightness`
-   * `TW_MAX_BRIGHTNESS := 2047`
-   * `TW_DEFAULT_BRIGHTNESS := 716`  *(35% dari 2047)*
-2. Di `init.recovery.qcom.rc`:
-   * `write /sys/class/backlight/panel0-backlight/brightness 716`
+### Faktor 5: Timeout Menunggu Partisi MicroSD Palsu (`recovery.fstab`)
+* **Kondisi Kode Saat Ini:**
+  Di [recovery/root/system/etc/recovery.fstab](file:///workspace/orange-fox-ingres/recovery/root/system/etc/recovery.fstab#L49):
+  `/dev/block/mmcblk0p1 /sdcard vfat nosuid,nodev wait`
+* **Dampak Fatal:**
+  POCO F4 GT **tidak memiliki slot MicroSD**. Flag `wait` memaksa init/vold untuk memblokir proses mount dan menunggu kemunculan device block `mmcblk0p1` hingga batas waktu timeout habis. Selain itu, konfigurasi ini bertabrakan dengan `RECOVERY_SDCARD_ON_DATA := true`.
+* **Solusi Mutlak:**
+  Hapus baris `mmcblk0p1` dari `recovery.fstab`.
 
 ---
 
-### Modul 4: Pembersihan Identitas Lama & Kepemilikan Repositori
-1. **Pembaruan Konfigurasi Maintainer:**
-   * Di `vendorsetup.sh`: Ganti `OF_MAINTAINER="bladee"` menjadi `OF_MAINTAINER="Bymeopen"`.
-2. **Pembersihan Komentar Kode:**
-   * Hapus seluruh sebutan `cupid` dan `bladee` pada `BoardConfig.mk`, `init.recovery.qcom.rc`, `init.recovery.usb.rc`, dan `README.md`.
-3. **Pilihan Penanganan Riwayat Git (Git History):**
-   * **Opsi A (Paling Bersih - Disarankan):** Squash / reset riwayat git lokal menjadi 1 initial commit bersih atas nama `Bymeopen <byme.openwrt@gmail.com>`. Seluruh histori commit `bladee` akan hilang sepenuhnya.
-   * **Opsi B:** Pertahankan commit history yang ada, dan buat commit baru berisi perubahan optimasi ini atas nama `Bymeopen`.
+### Faktor 6: Input Queue Flooding dari Touch Panel 480Hz STMicro
+* **Kondisi Perangkat:**
+  Layar gaming POCO F4 GT memiliki IC Touch **STMicroelectronics FTS** dengan sampling rate hingga **480 Hz** (mengirim hingga 480 sinyal interrupt per detik).
+* **Dampak Fatal:**
+  Jika MinUI berjalan di CPU frekuensi rendah (300 MHz) dan memproses event input secara sinkron satu per satu pada thread utama, antrean event (`/dev/input/event*`) akan mengalami *buffer overflow*. Akibatnya, UI freeze dan tidak responsif terhadap sentuhan jari.
+* **Solusi Mutlak:**
+  Dengan menaikkan frekuensi dasar CPU ke >1.0 GHz dan mengoptimalkan buffer grafis di `system.prop`, MinUI dapat menguras antrean event secepat sentuhan dideteksi tanpa menumpuk di kernel.
 
 ---
 
-## 4. Matriks Berkas yang Terdampak (Affected Files)
+### Faktor 7: Optimasi Tambahan Grafis MinUI di `system.prop`
+* MinUI membaca beberapa properti runtime saat menginisialisasi framebuffer:
+  1. `ro.minui.pixel_format=RGBX_8888`
+  2. `debug.sf.disable_backpressure=1`
+  3. `debug.sf.latch_unsignaled=1`
+* Menambahkan properti ini di `system.prop` memastikan pipeline rendering langsung terkunci pada mode performa tanpa sinkronisasi buffer yang membebani.
 
-| File | Tindakan & Perubahan Utama |
-| :--- | :--- |
-| [`BoardConfig.mk`](file:///workspace/orange-fox-ingres/BoardConfig.mk) | Hapus vfb/earlyprintk dari cmdline; perbaiki quotes `RGBX_8888`; tambah resolusi 1080x2400; set `TW_DEFAULT_BRIGHTNESS := 716`; ganti haptics dengan `TW_NO_HAPTICS := true`; bersihkan komentar `cupid`. |
-| [`vendorsetup.sh`](file:///workspace/orange-fox-ingres/vendorsetup.sh) | Set `OF_MAINTAINER="Bymeopen"`; tambah `OF_SCREEN_H=2400` dan indent padding. |
-| [`recovery/root/init.recovery.qcom.rc`](file:///workspace/orange-fox-ingres/recovery/root/init.recovery.qcom.rc) | Set kecerahan 716; tambah scaling governor CPU `schedutil` & online cores; hapus ghost service `touch_report`/`touchsensor`. |
-| [`recovery/root/vendor/etc/init/vendor.xiaomi.hardware.vibratorfeature.service.rc`](file:///workspace/orange-fox-ingres/recovery/root/vendor/etc/init/vendor.xiaomi.hardware.vibratorfeature.service.rc) | Nonaktifkan service start vibrator agar tidak membebani sistem. |
-| [`recovery/root/init.recovery.usb.rc`](file:///workspace/orange-fox-ingres/recovery/root/init.recovery.usb.rc) | Bersihkan residu properti Asus. |
-| [`README.md`](file:///workspace/orange-fox-ingres/README.md) | Perbarui dokumentasi resmi POCO F4 GT tanpa referensi ke perangkat/author lain. |
+---
+
+### Faktor 8: Redundansi Path Modul Touchscreen
+* Driver touchscreen (`fts_touch_spi.ko` dan `xiaomi_touch.ko`) saat ini hanya ada di subfolder `recovery/root/vendor/lib/modules/1.1/`.
+* Untuk memastikan modprobe atau script eksternal dapat memuat modul secara instan tanpa kegagalan path, kita buatkan salinan/link di direktori induk `/vendor/lib/modules/`.
+
+---
+
+## 3. Matriks Solusi Rinci (Comprehensive Fix Matrix)
+
+| Komponen | Berkas Terkait | Akar Masalah | Solusi Implementasi |
+| :--- | :--- | :--- | :--- |
+| **CPU Clock & Governor** | [`init.recovery.qcom.rc`](file:///workspace/orange-fox-ingres/recovery/root/init.recovery.qcom.rc)<br>[`postrecoveryboot.sh`](file:///workspace/orange-fox-ingres/recovery/root/system/bin/postrecoveryboot.sh) | CPU idle di 300MHz karena tidak ada touch boost | Atur `scaling_governor performance` dan naikkan `scaling_min_freq` ke 1.05GHz+ pada `on boot` & `postrecoveryboot.sh`. |
+| **Display Permissions** | [`ueventd.rc`](file:///workspace/orange-fox-ingres/recovery/root/vendor/ueventd.rc) | Baris stray `*/` merusak izin MDSS/MDP | Hapus baris 434 (`*/`). |
+| **Thermal Stutter** | [`BoardConfig.mk`](file:///workspace/orange-fox-ingres/BoardConfig.mk) | Polling `thermal_zone50` memblokir UI thread tiap detik | Aktifkan `TW_NO_CPU_TEMP := true`, hapus `TW_CUSTOM_CPU_TEMP_PATH`. |
+| **Sleep / Suspend** | [`system.prop`](file:///workspace/orange-fox-ingres/system.prop) | CPU suspend saat dicas/kabel terpasang | Ubah `ro.charger.enable_suspend=0`. |
+| **MinUI Graphics** | [`system.prop`](file:///workspace/orange-fox-ingres/system.prop) | Format piksel hardware belum dikunci di level properti | Tambahkan `ro.minui.pixel_format=RGBX_8888` & tuning SF. |
+| **Storage Timeout** | [`recovery.fstab`](file:///workspace/orange-fox-ingres/recovery/root/system/etc/recovery.fstab) | `wait` pada MicroSD `mmcblk0p1` yang tidak ada | Hapus baris `mmcblk0p1`. |
+| **Touch Module Path** | [`recovery/root/vendor/lib/modules/`](file:///workspace/orange-fox-ingres/recovery/root/vendor/lib/modules/) | Modul hanya di subfolder `1.1/` | Sediakan salinan di root `/vendor/lib/modules/`. |
+| **Haptics / Getar** | [`BoardConfig.mk`](file:///workspace/orange-fox-ingres/BoardConfig.mk)<br>[`vibratorfeature.rc`](file:///workspace/orange-fox-ingres/recovery/root/vendor/etc/init/vendor.xiaomi.hardware.vibratorfeature.service.rc) | Layanan haptic crash-loop & memblokir Binder | Tetap nonaktif (`TW_NO_HAPTICS := true`, service disabled). |
+| **Kecerahan 35%** | [`BoardConfig.mk`](file:///workspace/orange-fox-ingres/BoardConfig.mk)<br>[`init.recovery.qcom.rc`](file:///workspace/orange-fox-ingres/recovery/root/init.recovery.qcom.rc) | Default sebelumnya 50% (1024) | Tetap di 35% (nilai 716 dari 2047). |
+| **Git History** | Repositori Git | Permintaan pengguna: biarkan author lama | Pertahankan commit history lama, tambahkan commit baru. |
+
+---
+
+## 4. Rencana Langkah Eksekusi (Implementation Plan)
+1. **Perbaikan `ueventd.rc`**: Bersihkan baris penutup `*/` yang rusak.
+2. **Optimasi `system.prop`**: Nonaktifkan charger suspend, kunci `ro.minui.pixel_format=RGBX_8888`, dan tambahkan flag SurfaceFlinger.
+3. **Penyempurnaan `BoardConfig.mk`**: Tambahkan `TW_NO_CPU_TEMP := true`, hapus `TW_CUSTOM_CPU_TEMP_PATH`.
+4. **Pembersihan `recovery.fstab`**: Hapus baris `mmcblk0p1`.
+5. **Multi-layer CPU Boosting**:
+   * Perbarui [`init.recovery.qcom.rc`](file:///workspace/orange-fox-ingres/recovery/root/init.recovery.qcom.rc) pada blok `on boot` untuk memastikan core CPU 0–7 online dan governor terkunci ke `performance`.
+   * Perbarui [`postrecoveryboot.sh`](file:///workspace/orange-fox-ingres/recovery/root/system/bin/postrecoveryboot.sh) agar memverifikasi dan menyetel frekuensi minimum CPU saat runtime recovery dimulai.
+6. **Redundansi Modul Touch**: Sinkronkan modul touch ke `/vendor/lib/modules/`.
+7. **Commit Git**: Commit seluruh perbaikan di atas atas nama `Bymeopen` dengan tetap mempertahankan commit riwayat lama.

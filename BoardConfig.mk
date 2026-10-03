@@ -238,8 +238,8 @@ BOARD_VENDOR_RAMDISK_RECOVERY_KERNEL_MODULES_LOAD := $(strip $(shell cat $(DEVIC
 # flag is clearly not just inert -- keep it defined.
 TW_LOAD_VENDOR_MODULES := "xiaomi_touch.ko fts_touch_spi.ko"
 
-# The path to a temperature sensor
-TW_CUSTOM_CPU_TEMP_PATH := "/sys/devices/virtual/thermal/thermal_zone50/temp"
+# Disable CPU temp polling in recovery UI loop to prevent blocking I/O and stutter
+TW_NO_CPU_TEMP := true
 
 # Namespace definition for librecovery_updater
 SOONG_CONFIG_NAMESPACES += ufsbsg
