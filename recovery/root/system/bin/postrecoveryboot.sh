@@ -1,7 +1,6 @@
-#!/sbin/sh
+#!/system/bin/sh
 #
-# TODO: this kludge is needed to prevent issues with mounting
-# system and vendor in some zip installers and in the gui
+# Helper script to prepare runtime directories and mounts
 #
 sleep 1
 mount -w /product > /dev/null
