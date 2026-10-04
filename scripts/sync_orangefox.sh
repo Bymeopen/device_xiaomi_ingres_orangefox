@@ -5,9 +5,8 @@
 # ==============================================================================
 set -euo pipefail
 
-WORKSPACE="${GITHUB_WORKSPACE:-$HOME}"
-TARGET_DIR="${1:-$WORKSPACE/fox_14.1}"
-SYNC_DIR="$WORKSPACE/OrangeFox_sync"
+TARGET_DIR="${1:-$HOME/fox_14.1}"
+SYNC_DIR="$HOME/OrangeFox_sync"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export EXCLUDE_PY="$SCRIPT_DIR/exclude_bloat.py"
 
@@ -44,7 +43,7 @@ with open('orangefox_sync.sh', 'r') as f:
     code = f.read()
 
 target = 'echo "-- Syncing the $TWRP_BRANCH minimal manifest repo ...";'
-injection = f'  python3 "{exclude_py}" "$MANIFEST_DIR/.repo/manifests/remove-minimal.xml"\n  ' + target
+injection = f'  python3 "{exclude_py}" "$MANIFEST_DIR/.repo/manifests"\n  ' + target
 
 if target in code and 'exclude_bloat.py' not in code:
     code = code.replace(target, injection, 1)
@@ -58,8 +57,17 @@ bash -n orangefox_sync.sh
 echo "Running optimized OrangeFox sync script..."
 ./orangefox_sync.sh --branch 14.1 --path "$TARGET_DIR"
 
+# 6. Post-sync cleanup: prune unused clang versions (only keep active clang-r510928)
+CLANG_DIR="$TARGET_DIR/prebuilts/clang/host/linux-x86"
+if [ -d "$CLANG_DIR" ]; then
+    echo "Pruning unused clang toolchain versions..."
+    find "$CLANG_DIR" -maxdepth 1 -type d -name "clang-r*" ! -name "clang-r510928" -exec rm -rf {} + 2>/dev/null || true
+    find "$CLANG_DIR" -maxdepth 1 -type d -name "clang-stable" -exec rm -rf {} + 2>/dev/null || true
+fi
+
+# 7. Reclaim disk space by removing .repo metadata directory
 echo "Reclaiming disk space by removing .repo metadata directory..."
 rm -rf "$TARGET_DIR/.repo"
 
 echo "=== Disk Space After Sync & Cleanup ==="
-df -h
+df -h /
